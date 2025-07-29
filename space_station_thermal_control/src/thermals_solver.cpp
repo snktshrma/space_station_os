@@ -24,11 +24,52 @@ ThermalSolverNode::ThermalSolverNode()
     "/thermals/diagnostics", 10);
   cooling_client_ = this->create_client<space_station_thermal_control::srv::NodeHeatFlow>(
     "/internal_loop_cooling");
+  solar_sub_ = this->create_subscription<space_station_thermal_control::msg::SolarPanelsQ>(
+    "/thermal/solar_heat", 10,
+    std::bind(&ThermalSolverNode::solarHeatCallback, this, std::placeholders::_1));
 
   this->declare_parameter("enable_failure", false);
   this->declare_parameter("enable_cooling", true);
+  this->declare_parameter("cooling_trigger_threshold", 330.0);
+  this->declare_parameter("max_temp_threshold", 420.0);
+  this->declare_parameter("cooling_rate", 10.0);
+  this->declare_parameter("thermal_update_dt", 0.5);
+  this->declare_parameter("sink_temperature", 293.15);
+
+  this->declare_parameter("init_temp_low", 290.0);
+  this->declare_parameter("init_temp_high", 310.0);
+  this->declare_parameter("capacity_low", 500.0);
+  this->declare_parameter("capacity_high", 1500.0);
+  this->declare_parameter("power_low", 30.0);
+  this->declare_parameter("power_high", 60.0);
+  this->declare_parameter("conductance_low", 0.05);
+  this->declare_parameter("conductance_high", 2.0);
+  this->declare_parameter("panel_node_mappings", std::vector<std::string>{});
   enable_failure_ = this->get_parameter("enable_failure").as_bool();
   enable_cooling_ = this->get_parameter("enable_cooling").as_bool();
+  cooling_trigger_threshold_ = this->get_parameter("cooling_trigger_threshold").as_double();
+  max_temp_threshold_ = this->get_parameter("max_temp_threshold").as_double();
+  cooling_rate_ = this->get_parameter("cooling_rate").as_double();
+  thermal_update_dt_ = this->get_parameter("thermal_update_dt").as_double();
+  sink_temperature_ = this->get_parameter("sink_temperature").as_double();
+
+  init_temp_low_ = this->get_parameter("init_temp_low").as_double();
+  init_temp_high_ = this->get_parameter("init_temp_high").as_double();
+  capacity_low_ = this->get_parameter("capacity_low").as_double();
+  capacity_high_ = this->get_parameter("capacity_high").as_double();
+  power_low_ = this->get_parameter("power_low").as_double();
+  power_high_ = this->get_parameter("power_high").as_double();
+  conductance_low_ = this->get_parameter("conductance_low").as_double();
+  conductance_high_ = this->get_parameter("conductance_high").as_double();
+
+  std::vector<std::string> mapping_strings;
+  this->get_parameter("panel_node_mappings", mapping_strings);
+  for (const auto &m : mapping_strings) {
+    auto pos = m.find(":");
+    if (pos != std::string::npos) {
+      panel_node_map_[m.substr(0, pos)] = m.substr(pos + 1);
+    }
+  }
 
   param_callback_ = this->add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> &params) {
@@ -43,7 +84,8 @@ ThermalSolverNode::ThermalSolverNode()
         return result;
       });
 
-  timer_ = this->create_wall_timer(100ms, std::bind(&ThermalSolverNode::updateSimulation, this));
+  timer_ = this->create_wall_timer(std::chrono::duration<double>(thermal_update_dt_),
+                                   std::bind(&ThermalSolverNode::updateSimulation, this));
 }
 
 ThermalSolverNode::~ThermalSolverNode() {}
@@ -56,10 +98,10 @@ void ThermalSolverNode::parseURDF(const std::string &urdf_string)
     return;
   }
 
-  std::uniform_real_distribution<double> temp_dist(290.0, 310.0);
-  std::uniform_real_distribution<double> capacity_dist(500.0, 1500.0);
-  std::uniform_real_distribution<double> power_dist(30.0, 60.0);
-  std::uniform_real_distribution<double> cond_dist(0.05, 2.0);
+  std::uniform_real_distribution<double> temp_dist(init_temp_low_, init_temp_high_);
+  std::uniform_real_distribution<double> capacity_dist(capacity_low_, capacity_high_);
+  std::uniform_real_distribution<double> power_dist(power_low_, power_high_);
+  std::uniform_real_distribution<double> cond_dist(conductance_low_, conductance_high_);
 
   thermal_nodes_.clear();
   thermal_links_.clear();
@@ -97,6 +139,9 @@ double ThermalSolverNode::compute_dTdt(const std::string &name,
 {
   const auto &node = thermal_nodes_[name];
   double q_total = node.internal_power;
+  if (auto it = solar_heat_input_.find(name); it != solar_heat_input_.end()) {
+    q_total += it->second;
+  }
 
   for (const auto &link : thermal_links_) {
     if (link.from == name && temps.count(link.to))
@@ -108,9 +153,19 @@ double ThermalSolverNode::compute_dTdt(const std::string &name,
   return q_total / node.heat_capacity;
 }
 
+void ThermalSolverNode::solarHeatCallback(const space_station_thermal_control::msg::SolarPanelsQ::SharedPtr msg)
+{
+  for (size_t i = 0; i < msg->names.size() && i < msg->heat_watts.size(); ++i) {
+    auto it = panel_node_map_.find(msg->names[i]);
+    if (it != panel_node_map_.end()) {
+      solar_heat_input_[it->second] = msg->heat_watts[i];
+    }
+  }
+}
+
 void ThermalSolverNode::coolingCallback()
 {
-  if (enable_failure_ && avg_temperature_ > 420.0) {
+  if (enable_failure_ && avg_temperature_ > max_temp_threshold_) {
     diagnostic_msgs::msg::DiagnosticStatus diag;
     diag.name = "THERMAL_SOLVER_OVERHEAT";
     diag.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
@@ -119,7 +174,7 @@ void ThermalSolverNode::coolingCallback()
     RCLCPP_ERROR(this->get_logger(), "Thermal system overheating, triggering cooling.");
   }
 
-  if (!cooling_active_ && enable_cooling_ && avg_temperature_ > 330.0) {
+  if (!cooling_active_ && enable_cooling_ && avg_temperature_ > cooling_trigger_threshold_) {
     if (cooling_client_->wait_for_service(1s)) {
       auto req = std::make_shared<space_station_thermal_control::srv::NodeHeatFlow::Request>();
       req->heat_flow = avg_temperature_ - 273.15;
@@ -145,7 +200,7 @@ void ThermalSolverNode::updateSimulation()
   if (thermal_nodes_.empty())
     return;
 
-  const double dt = 0.5;
+  const double dt = thermal_update_dt_;
 
   double total_temp = 0.0;
   double total_power = 0.0;
@@ -242,7 +297,7 @@ void ThermalSolverNode::updateSimulation()
       }
 
       // Simulate base_link (or surrounding environment) as fixed temp
-      double T_b = 293.15;  
+      double T_b = sink_temperature_;
 
       l.heat_flow = link.conductance * (T_a - T_b);
       link_msg.links.push_back(l);

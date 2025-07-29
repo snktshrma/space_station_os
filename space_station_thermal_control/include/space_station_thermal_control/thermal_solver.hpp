@@ -16,6 +16,7 @@
 #include "space_station_thermal_control/msg/thermal_node_data.hpp"
 #include "space_station_thermal_control/msg/thermal_link_flows_array.hpp"
 #include "space_station_thermal_control/msg/thermal_link_flows.hpp"
+#include "space_station_thermal_control/msg/solar_panels_q.hpp"
 #include "space_station_thermal_control/srv/node_heat_flow.hpp"
 #include <chrono>
 
@@ -47,6 +48,7 @@ private:
   void updateSimulation();
   double compute_dTdt(const std::string &name, const std::unordered_map<std::string, double> &temps);
   void coolingCallback();
+  void solarHeatCallback(const space_station_thermal_control::msg::SolarPanelsQ::SharedPtr msg);
 
   std::unordered_map<std::string, ThermalNode> thermal_nodes_;
   std::vector<ThermalLink> thermal_links_;
@@ -63,9 +65,27 @@ private:
 
   bool cooling_active_ = false;
   double cooling_rate_ = 10.0;
+  double cooling_trigger_threshold_ = 330.0;
+  double max_temp_threshold_ = 420.0;
+  double thermal_update_dt_ = 0.5;
+  double sink_temperature_ = 293.15;
+
+  double init_temp_low_ = 290.0;
+  double init_temp_high_ = 310.0;
+  double capacity_low_ = 500.0;
+  double capacity_high_ = 1500.0;
+  double power_low_ = 30.0;
+  double power_high_ = 60.0;
+  double conductance_low_ = 0.05;
+  double conductance_high_ = 2.0;
+
   double avg_temperature_ = 0.0;
   double avg_internal_power_ = 0.0;
   std::unordered_map<std::string, double> initial_temperatures_;
+
+  std::unordered_map<std::string, std::string> panel_node_map_;
+  std::unordered_map<std::string, double> solar_heat_input_;
+  rclcpp::Subscription<space_station_thermal_control::msg::SolarPanelsQ>::SharedPtr solar_sub_;
 
   std::default_random_engine rng_;
 };

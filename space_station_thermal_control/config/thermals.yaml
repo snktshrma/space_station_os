@@ -1,6 +1,7 @@
 thermal_solver_node:
   ros__parameters:
     sink_link: "base_link"
+    sink_temperature: 293.15
     cooling_trigger_threshold: 400.0
     max_temp_threshold: 500.0
     cooling_rate: 0.05
@@ -17,3 +18,7 @@ thermal_solver_node:
 
     conductance_low: 0.05
     conductance_high: 2.0
+
+    panel_node_mappings:
+      - "panel_left:left_joint"
+      - "panel_right:right_joint"

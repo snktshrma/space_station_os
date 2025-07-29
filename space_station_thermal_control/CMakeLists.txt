@@ -83,7 +83,7 @@ target_link_libraries(sun_vector ${BULLET_LIBRARIES})
 add_executable(array_absorptivity src/solar_heat_node.cpp)
 ament_target_dependencies(array_absorptivity rosidl_default_generators rclcpp sensor_msgs space_station_eclss)
 rosidl_target_interfaces(array_absorptivity ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(sun_vector ${BULLET_LIBRARIES})
+target_link_libraries(array_absorptivity ${BULLET_LIBRARIES})
 
 
 include_directories(include)
